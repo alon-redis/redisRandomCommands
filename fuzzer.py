@@ -314,7 +314,7 @@ class RedisFuzzer:
             return command
             
         # Select a fuzzing strategy
-        fuzz_strategy = random.randint(0, 5)  # Updated to include new strategy
+        fuzz_strategy = random.randint(0, 6)  # Updated to include new strategy
         
         if fuzz_strategy == 0:
             # Insert random special character
@@ -422,8 +422,54 @@ class RedisFuzzer:
                 all_parts.insert(cmd_pos, cmd_name)
                 
                 return ' '.join(all_parts)
+        
+        elif fuzz_strategy == 6:
+            # Change parameter types
+            words = command.split()
             
-        print(command)
+            # Need at least command name + 1 argument to change parameter type
+            if len(words) < 2:
+                return command
+                
+            # Preserve the command name
+            cmd_name = words[0]
+            arguments = words[1:]
+            
+            # Select a random argument to change
+            if not arguments:
+                return command
+                
+            arg_idx = random.randint(0, len(arguments) - 1)
+            orig_arg = arguments[arg_idx]
+            
+            # Define parameter type transformations
+            param_type = random.randint(0, 5)
+            
+            if param_type == 0:
+                # Convert to integer
+                new_arg = str(random.randint(-2147483648, 2147483647))
+            elif param_type == 1:
+                # Convert to large int32
+                new_arg = str(random.randint(1000000000, 2147483647))
+            elif param_type == 2:
+                # Convert to float
+                new_arg = f"{random.uniform(-1000000, 1000000):.5f}"
+            elif param_type == 3:
+                # Convert to string with quotes
+                new_arg = f'"{orig_arg}_{random.randint(1, 1000)}"'
+            elif param_type == 4:
+                # Convert to boolean
+                new_arg = random.choice(["true", "false", "1", "0"])
+            elif param_type == 5:
+                # Convert to negative number
+                new_arg = f"-{random.randint(1, 1000000)}"
+            
+            # Replace the argument with the new type
+            arguments[arg_idx] = new_arg
+            
+            # Reconstruct the command
+            return cmd_name + ' ' + ' '.join(arguments)
+            
         return command
         
     def execute_batch(self, batch_num):
