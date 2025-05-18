@@ -478,7 +478,15 @@ class RedisFuzzer:
             f.write("Commands:\n")
         
         # Create ECHO command to verify server is alive
-        echo_value = f"ALIVE_CHECK_{batch_num}"
+        # Include metadata about the batch in the ECHO value using parameters format
+        echo_id = f"ALIVE_CHECK_{batch_num}"
+        echo_value = (f"{echo_id} "
+                     f"pipeline_size={pipeline_size} "
+                     f"mode={'pipeline' if self.use_pipeline else 'standard'} "
+                     f"protocol=RESP{3 if not self.protocol_resp2 else 2} "
+                     f"batch={batch_num} "
+                     f"timestamp={int(time.time())}")
+        
         echo_command = f"ECHO {echo_value}"
         
         # Add ECHO command to log file
@@ -516,6 +524,7 @@ class RedisFuzzer:
         result_output = ""
         error_output = ""
         echo_check_passed = False
+        echo_metadata = {}
         
         try:
             # Create a Redis client for both ECHO check and main commands
@@ -544,8 +553,25 @@ class RedisFuzzer:
                 # Check if ECHO response is as expected
                 if echo_response == echo_value:
                     echo_check_passed = True
-                    with open(self.output_file, 'a') as f:
-                        f.write(f"ECHO check: PASSED\n")
+                    
+                    # Parse metadata from the ECHO response for logging
+                    try:
+                        # Extract parameters from the response
+                        parts = echo_response.split()
+                        echo_id = parts[0]  # First part is the ID
+                        
+                        # Process remaining parts as key=value pairs
+                        for param in parts[1:]:
+                            if '=' in param:
+                                key, value = param.split('=', 1)
+                                echo_metadata[key] = value
+                        
+                        with open(self.output_file, 'a') as f:
+                            f.write(f"ECHO check: PASSED\n")
+                            f.write(f"ECHO metadata: {echo_metadata}\n")
+                    except Exception as e:
+                        with open(self.output_file, 'a') as f:
+                            f.write(f"ECHO check: PASSED (but failed to parse metadata: {str(e)})\n")
                 else:
                     with open(self.output_file, 'a') as f:
                         f.write(f"ECHO check: FAILED (unexpected response: {echo_response})\n")
@@ -567,7 +593,8 @@ class RedisFuzzer:
             if self.use_pipeline and echo_check_passed:
                 # Pipeline mode - execute all commands in a single transaction
                 with open(self.output_file, 'a') as f:
-                    f.write("ECHO check passed, proceeding with pipeline execution...\n")
+                    f.write(f"ECHO check passed with metadata: {echo_metadata}\n")
+                    f.write(f"Proceeding with pipeline execution...\n")
                 
                 pipeline = redis_client.pipeline(transaction=False)
                 
@@ -642,7 +669,7 @@ class RedisFuzzer:
                     pipeline_result = "Pipeline executed with the following responses:\n"
                     
                     # Include ECHO check result (which was already verified)
-                    pipeline_result += f"ECHO check: PASSED\n"
+                    pipeline_result += f"ECHO check: PASSED with metadata: {echo_metadata}\n"
                     
                     # Add all responses in a single log entry
                     pipeline_result += f"Total commands in pipeline: {len(commands)}, Responses received: {len(responses)}\n\n"
@@ -712,7 +739,8 @@ class RedisFuzzer:
             elif not self.use_pipeline and echo_check_passed:
                 # Non-pipeline mode - we already did the ECHO check
                 with open(self.output_file, 'a') as f:
-                    f.write("ECHO check passed, sending individual commands...\n")
+                    f.write(f"ECHO check passed with metadata: {echo_metadata}\n")
+                    f.write("Sending individual commands...\n")
                 
                 # Add the server liveness check result
                 results.append(f"Server liveness check: PASSED\n")
@@ -826,10 +854,10 @@ class RedisFuzzer:
             else:
                 if self.use_pipeline:
                     f.write(f"PIPELINE EXECUTION SUCCEEDED ({execution_time:.2f}s)\n")
-                    f.write(f"SERVER CHECK: PASSED (ECHO response received)\n")
+                    f.write(f"SERVER CHECK: PASSED (ECHO response received with metadata: {echo_metadata})\n")
                 else:
                     f.write(f"EXECUTION SUCCEEDED ({execution_time:.2f}s)\n")
-                    f.write(f"SERVER CHECK: PASSED (ECHO response received)\n")
+                    f.write(f"SERVER CHECK: PASSED (ECHO response received with metadata: {echo_metadata})\n")
                 
                 if result_output:
                     if self.use_pipeline:
