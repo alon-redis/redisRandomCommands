@@ -491,11 +491,8 @@ class RedisFuzzer:
         
         # Generate commands list
         commands = []
-        # Only add ECHO to commands list if NOT using pipeline
-        if not self.use_pipeline:
-            commands.append(echo_command)
         
-        # Add the random commands
+        # Add the random commands to our command list
         for _ in range(pipeline_size):
             cmd = self.random_command()
             fuzzed_cmd = self.fuzz_command(cmd)
@@ -503,6 +500,10 @@ class RedisFuzzer:
             
             with open(self.output_file, 'a') as f:
                 f.write(f"{fuzzed_cmd}\n")
+                
+        # Log the commands list creation
+        with open(self.output_file, 'a') as f:
+            f.write(f"Generated {len(commands)} commands for {'pipeline' if self.use_pipeline else 'sequential'} execution\n")
                 
         # Execute commands with timeout and error handling
         start_time = time.time()
@@ -525,6 +526,9 @@ class RedisFuzzer:
             
             # First, perform ECHO check on a separate connection if using pipeline
             if self.use_pipeline:
+                with open(self.output_file, 'a') as f:
+                    f.write("Performing ECHO check on separate connection...\n")
+                    
                 # Create a separate connection for the ECHO check
                 echo_client = redis.Redis(
                     host=self.ip, 
@@ -540,9 +544,16 @@ class RedisFuzzer:
                     echo_response = echo_client.echo(echo_value)
                     if echo_response == echo_value:
                         echo_check_passed = True
+                        with open(self.output_file, 'a') as f:
+                            f.write(f"ECHO check received response: {echo_response}\n")
+                    else:
+                        with open(self.output_file, 'a') as f:
+                            f.write(f"ECHO check received unexpected response: {echo_response}\n")
                     echo_client.close()
                 except redis.RedisError as e:
                     error_output += f"Error during separate ECHO check: {str(e)}\n"
+                    with open(self.output_file, 'a') as f:
+                        f.write(f"ECHO check error: {str(e)}\n")
                     # Keep echo_check_passed as False
                     
                 # Log the ECHO result
@@ -557,6 +568,26 @@ class RedisFuzzer:
                 # Pipeline mode - execute all commands in a single transaction
                 pipeline = redis_client.pipeline(transaction=False)
                 
+                # Check if we have any commands to execute
+                if not commands:
+                    # Log warning about empty command list
+                    error_output += "Warning: No commands to execute in pipeline.\n"
+                    with open(self.output_file, 'a') as f:
+                        f.write("Warning: Pipeline has no commands to execute.\n")
+                    
+                    # Add some dummy commands to ensure pipeline is not empty
+                    commands = [
+                        "PING pipeline_test",
+                        "INFO",
+                        "TIME"
+                    ]
+                    
+                    # Update log with dummy commands
+                    with open(self.output_file, 'a') as f:
+                        f.write("Adding default commands to pipeline:\n")
+                        for cmd in commands:
+                            f.write(f"  {cmd}\n")
+                
                 # Add all commands to the pipeline
                 for cmd in commands:
                     try:
@@ -570,11 +601,38 @@ class RedisFuzzer:
                         
                         # Queue the command in the pipeline
                         pipeline.execute_command(command_name, *args)
+                        
+                        # Log that the command was queued in the pipeline
+                        with open(self.output_file, 'a') as f:
+                            f.write(f"Queued in pipeline: {command_name} {' '.join(args)}\n")
+                            
                     except Exception as e:
                         error_output += f"Error queuing {cmd} in pipeline: {str(e)}\n"
                 
                 # Execute the pipeline and get responses
                 try:
+                    # Log that we're executing the pipeline
+                    with open(self.output_file, 'a') as f:
+                        f.write(f"Executing pipeline with {len(commands)} commands...\n")
+                    
+                    # The command_stack attribute holds the number of queued commands
+                    # Check if anything was actually queued
+                    if hasattr(pipeline, 'command_stack') and pipeline.command_stack:
+                        with open(self.output_file, 'a') as f:
+                            f.write(f"Pipeline has {len(pipeline.command_stack)} queued commands\n")
+                    else:
+                        with open(self.output_file, 'a') as f:
+                            f.write("Warning: Pipeline appears to be empty! Re-queueing commands...\n")
+                        
+                        # Re-queue all commands explicitly
+                        for cmd in commands:
+                            cmd_parts = cmd.split()
+                            if cmd_parts:
+                                command_name = cmd_parts[0].upper()
+                                args = cmd_parts[1:] if len(cmd_parts) > 1 else []
+                                pipeline.execute_command(command_name, *args)
+                                
+                    # Execute the pipeline
                     responses = pipeline.execute()
                     
                     # In pipeline mode, just log all responses as a single entry
@@ -586,32 +644,67 @@ class RedisFuzzer:
                     # Add all responses in a single log entry
                     pipeline_result += f"Total commands in pipeline: {len(commands)}, Responses received: {len(responses)}\n\n"
                     
-                    # Add the commands and responses
-                    for i, (cmd, response) in enumerate(zip(commands, responses)):
-                        # In pipeline mode, safely handle binary responses that might not be UTF-8 decodable
+                    # Super robust handling of commands and responses
+                    i = 0
+                    response_i = 0
+                    
+                    # Print all commands
+                    pipeline_result += "Commands sent:\n"
+                    for i, cmd in enumerate(commands):
+                        pipeline_result += f"Command [{i+1}]: {cmd}\n"
+                    
+                    pipeline_result += "\nResponses received:\n"
+                    
+                    # Print all responses without trying to match them to commands
+                    for i, response in enumerate(responses):
                         try:
-                            # Try to decode binary responses if needed
+                            # Handle different response types safely
                             if isinstance(response, bytes):
                                 try:
                                     resp_str = response.decode('utf-8')
-                                    pipeline_result += f"Command [{i+1}]: {cmd}\nResponse: {resp_str}\n"
+                                    pipeline_result += f"Response [{i+1}]: {resp_str}\n"
                                 except UnicodeDecodeError:
                                     # If we can't decode as UTF-8, show as hex
-                                    pipeline_result += f"Command [{i+1}]: {cmd}\nResponse: <binary data: {response.hex()[:60]}...>\n"
+                                    pipeline_result += f"Response [{i+1}]: <binary data: {response.hex()[:60]}...>\n"
                             else:
-                                pipeline_result += f"Command [{i+1}]: {cmd}\nResponse: {response}\n"
+                                # Just convert to string directly without any special handling
+                                pipeline_result += f"Response [{i+1}]: {response}\n"
                         except Exception as e:
-                            pipeline_result += f"Command [{i+1}]: {cmd}\nResponse: <error processing response: {str(e)}>\n"
+                            # Catch any possible error in handling responses
+                            pipeline_result += f"Response [{i+1}]: <error displaying response: {str(e)}>\n"
                     
                     # Add to results as a single entry
                     results.append(pipeline_result)
                     
-                except (redis.RedisError, UnicodeDecodeError) as e:
+                except Exception as e:
+                    # Catch absolutely any error and continue execution
+                    error_type = type(e).__name__
+                    error_message = str(e)
+                    
                     if isinstance(e, UnicodeDecodeError):
-                        error_output += f"Error with binary data in pipeline: {str(e)}\n"
+                        error_output += f"Error with binary data in pipeline: {error_message}\n"
                         error_output += "Binary data is now handled safely in pipeline mode.\n"
+                    elif isinstance(e, redis.RedisError):
+                        error_output += f"Redis error in pipeline: {error_message}\n"
+                    elif isinstance(e, TypeError) and "'int' object is not iterable" in error_message:
+                        error_output += f"Type error with response: {error_message}\n"
+                        error_output += "This may occur when a command returns an integer response.\n"
+                    elif "too many values to unpack" in error_message:
+                        error_output += f"Unpacking error: {error_message}\n"
+                        error_output += "This may occur with certain Redis commands in pipeline mode.\n"
                     else:
-                        error_output += f"Error executing pipeline: {str(e)}\n"
+                        error_output += f"Error executing pipeline ({error_type}): {error_message}\n"
+                        
+                    # Try to record as much info as possible about what happened
+                    try:
+                        error_output += f"Commands executed: {len(commands)}\n"
+                        for i, cmd in enumerate(commands):
+                            if i < 5:  # Just log the first 5 to avoid huge logs
+                                error_output += f"  {i+1}. {cmd}\n"
+                        if len(commands) > 5:
+                            error_output += f"  ... and {len(commands) - 5} more commands\n"
+                    except:
+                        error_output += "Failed to log commands information.\n"
             else:
                 # Normal mode - execute commands individually
                 for cmd in commands:
@@ -750,13 +843,18 @@ class RedisFuzzer:
         # Wait a small random time between requests to avoid overwhelming the server
         time.sleep(random.randint(1, 5) / 10)
         
-        return exit_code == 0 and echo_check_passed
+        # Return tuple of (success, echo_failed)
+        # success = exit_code is 0 and echo check passed
+        # echo_failed = echo check specifically failed
+        return (exit_code == 0 and echo_check_passed, not echo_check_passed)
         
     def main(self):
         """Main execution function"""
         failed_batches = 0
         success_batches = 0
         consecutive_failures = 0  # Track consecutive failures separately
+        consecutive_echo_failures = 0  # Track consecutive ECHO check failures
+        max_consecutive_echo_failures = 5  # Maximum allowed consecutive ECHO failures
         
         print(f"Starting Redis command fuzzer with {self.num_batches} batches...")
         if self.fuzz_enabled:
@@ -771,11 +869,50 @@ class RedisFuzzer:
         # Process each batch
         batch_num = 0
         for batch_num in range(1, self.num_batches + 1):
-            batch_succeeded = self.execute_batch(batch_num)
+            batch_result = self.execute_batch(batch_num)
             
+            # Check if this is an echo failure specifically
+            if isinstance(batch_result, tuple) and len(batch_result) == 2:
+                batch_succeeded, echo_failed = batch_result
+            else:
+                # For backward compatibility if execute_batch hasn't been updated yet
+                batch_succeeded = batch_result
+                echo_failed = not batch_succeeded  # Assume failure is due to echo check
+                
             if not batch_succeeded:
                 failed_batches += 1
                 consecutive_failures += 1
+                
+                # Track echo check failures separately
+                if echo_failed:
+                    consecutive_echo_failures += 1
+                    
+                    # Check if we've reached the maximum allowed consecutive ECHO failures
+                    if consecutive_echo_failures >= max_consecutive_echo_failures:
+                        error_message = f"Error: {consecutive_echo_failures} consecutive ECHO check failures"
+                        detail_message = f"The Redis server failed to respond to ECHO checks {consecutive_echo_failures} times in a row."
+                        
+                        # Print to console
+                        print(error_message)
+                        print(detail_message)
+                        print(f"Halting execution after {batch_num} batches due to repeated ECHO failures.")
+                        
+                        # Log to summary file
+                        with open(self.summary_log, 'a') as f:
+                            f.write(f"[{datetime.now().strftime('%H:%M:%S')}] {error_message}\n")
+                            f.write(f"Halting execution after {batch_num} out of {self.num_batches} batches.\n")
+                            f.write(f"{detail_message}\n")
+                        
+                        # Log to error file
+                        with open(self.error_log, 'a') as error_file:
+                            error_file.write(f"\n==== CONSECUTIVE ECHO FAILURES ====\n")
+                            error_file.write(f"Time: {datetime.now().strftime('%H:%M:%S')}\n")
+                            error_file.write(f"After Batch: {batch_num}\n")
+                            error_file.write(f"{error_message}\n")
+                            error_file.write(f"{detail_message}\n")
+                            error_file.write(f"Stopping execution due to repeated ECHO check failures.\n")
+                            
+                        break
                 
                 # If we have 3 consecutive failures, check connectivity
                 if consecutive_failures >= 3:
@@ -821,7 +958,8 @@ class RedisFuzzer:
                         break
             else:
                 success_batches += 1
-                consecutive_failures = 0  # Only reset consecutive failures, not total failures
+                consecutive_failures = 0  # Reset consecutive failures counter
+                consecutive_echo_failures = 0  # Reset consecutive echo failures counter
                 
         # Print summary
         print()
@@ -843,6 +981,11 @@ class RedisFuzzer:
                 f.write(f"- Failure rate: {failure_rate:.2f}%\n")
             else:
                 f.write("- Failure rate: 0%\n")
+                
+            # Record consecutive echo failures if execution stopped due to them
+            if consecutive_echo_failures >= max_consecutive_echo_failures:
+                f.write(f"\nExecution stopped after {consecutive_echo_failures} consecutive ECHO check failures\n")
+                f.write(f"Maximum allowed consecutive ECHO failures: {max_consecutive_echo_failures}\n")
                 
         print("Logs saved to:")
         print(f"  - Commands: {self.output_file}")
