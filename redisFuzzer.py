@@ -483,11 +483,7 @@ class RedisFuzzer:
         
         # Add ECHO command to log file
         with open(self.output_file, 'a') as f:
-            # If using pipeline, indicate ECHO will run on separate connection
-            if self.use_pipeline:
-                f.write(f"{echo_command} (on separate connection)\n")
-            else:
-                f.write(f"{echo_command}\n")
+            f.write(f"{echo_command}\n")
         
         # Generate commands list
         commands = []
@@ -522,58 +518,57 @@ class RedisFuzzer:
         echo_check_passed = False
         
         try:
-            # Create a Redis client for main commands
+            # Create a Redis client for both ECHO check and main commands
+            # In pipeline mode, use decode_responses=False to handle binary data
+            # In non-pipeline mode, use decode_responses=True for easier handling
             redis_client = redis.Redis(
                 host=self.ip, 
                 port=self.port, 
                 socket_timeout=timeout_seconds,
                 socket_connect_timeout=timeout_seconds,
-                decode_responses=not self.use_pipeline,  # Only auto-decode in non-pipeline mode
+                decode_responses=not self.use_pipeline,  # Configure based on mode
                 protocol=2 if self.protocol_resp2 else 3  # Set protocol version based on args
             )
             
-            # First, perform ECHO check on a separate connection if using pipeline
-            if self.use_pipeline:
+            # Perform ECHO check first for server liveness (for both pipeline and non-pipeline mode)
+            try:
                 with open(self.output_file, 'a') as f:
-                    f.write("Performing ECHO check on separate connection...\n")
-                    
-                # Create a separate connection for the ECHO check
-                echo_client = redis.Redis(
-                    host=self.ip, 
-                    port=self.port, 
-                    socket_timeout=timeout_seconds,
-                    socket_connect_timeout=timeout_seconds,
-                    decode_responses=True,
-                    protocol=2 if self.protocol_resp2 else 3
-                )
+                    f.write(f"Sending ECHO check: {echo_command}\n")
                 
-                try:
-                    # Execute ECHO command on separate connection
-                    echo_response = echo_client.echo(echo_value)
-                    if echo_response == echo_value:
-                        echo_check_passed = True
-                        with open(self.output_file, 'a') as f:
-                            f.write(f"ECHO check received response: {echo_response}\n")
-                    else:
-                        with open(self.output_file, 'a') as f:
-                            f.write(f"ECHO check received unexpected response: {echo_response}\n")
-                    echo_client.close()
-                except redis.RedisError as e:
-                    error_output += f"Error during separate ECHO check: {str(e)}\n"
+                # Execute the ECHO command to check server liveness
+                # For pipeline mode with decode_responses=False, we need to manually decode
+                echo_response = redis_client.echo(echo_value)
+                if self.use_pipeline and isinstance(echo_response, bytes):
+                    echo_response = echo_response.decode('utf-8')
+                
+                # Check if ECHO response is as expected
+                if echo_response == echo_value:
+                    echo_check_passed = True
                     with open(self.output_file, 'a') as f:
-                        f.write(f"ECHO check error: {str(e)}\n")
-                    # Keep echo_check_passed as False
+                        f.write(f"ECHO check: PASSED\n")
+                else:
+                    with open(self.output_file, 'a') as f:
+                        f.write(f"ECHO check: FAILED (unexpected response: {echo_response})\n")
+                    # Don't execute further commands if ECHO fails
+                    raise redis.ConnectionError("ECHO check failed with unexpected response")
                     
-                # Log the ECHO result
+            except redis.RedisError as e:
+                error_output += f"ECHO check error: {str(e)}\n"
                 with open(self.output_file, 'a') as f:
-                    f.write(f"ECHO check (separate connection): {'PASSED' if echo_check_passed else 'FAILED'}\n")
+                    f.write(f"ECHO check: FAILED with error: {str(e)}\n")
+                # Don't execute further commands if ECHO fails
+                echo_check_passed = False
+                raise  # Re-raise to skip pipeline execution
             
-            
+            # If ECHO check passed, continue with command execution (pipeline or non-pipeline)
             # Execute commands - either in pipeline or individually
             results = []
             
-            if self.use_pipeline:
+            if self.use_pipeline and echo_check_passed:
                 # Pipeline mode - execute all commands in a single transaction
+                with open(self.output_file, 'a') as f:
+                    f.write("ECHO check passed, proceeding with pipeline execution...\n")
+                
                 pipeline = redis_client.pipeline(transaction=False)
                 
                 # Check if we have any commands to execute
@@ -646,8 +641,8 @@ class RedisFuzzer:
                     # In pipeline mode, just log all responses as a single entry
                     pipeline_result = "Pipeline executed with the following responses:\n"
                     
-                    # Include ECHO check result from the separate connection
-                    pipeline_result += f"ECHO check (separate connection): {'PASSED' if echo_check_passed else 'FAILED'}\n"
+                    # Include ECHO check result (which was already verified)
+                    pipeline_result += f"ECHO check: PASSED\n"
                     
                     # Add all responses in a single log entry
                     pipeline_result += f"Total commands in pipeline: {len(commands)}, Responses received: {len(responses)}\n\n"
@@ -713,72 +708,43 @@ class RedisFuzzer:
                             error_output += f"  ... and {len(commands) - 5} more commands\n"
                     except:
                         error_output += "Failed to log commands information.\n"
-            else:
-                # Normal mode - first perform ECHO check for server liveness
-                try:
-                    # First command should be ECHO for liveness check
-                    # Create ECHO command first to verify server is alive
-                    echo_cmd = f"ECHO {echo_value}"
-                    with open(self.output_file, 'a') as f:
-                        f.write(f"Sending ECHO check: {echo_cmd}\n")
-                    
-                    # Execute the ECHO command to check server liveness
-                    echo_response = redis_client.echo(echo_value)
-                    
-                    # Check if ECHO response is as expected
-                    if echo_response == echo_value:
-                        echo_check_passed = True
-                        results.append(f"Server liveness check: PASSED\n")
-                        with open(self.output_file, 'a') as f:
-                            f.write(f"ECHO check: PASSED\n")
-                    else:
-                        results.append(f"Server liveness check: FAILED (unexpected response: {echo_response})\n")
-                        with open(self.output_file, 'a') as f:
-                            f.write(f"ECHO check: FAILED (unexpected response: {echo_response})\n")
-                        # Don't execute further commands if ECHO fails
-                        raise redis.ConnectionError("ECHO check failed with unexpected response")
-                        
-                except redis.RedisError as e:
-                    results.append(f"Server liveness check FAILED: {str(e)}\n")
-                    error_output += f"ECHO check error: {str(e)}\n"
-                    with open(self.output_file, 'a') as f:
-                        f.write(f"ECHO check: FAILED with error: {str(e)}\n")
-                    # Don't execute further commands if ECHO fails
-                    echo_check_passed = False
+            
+            elif not self.use_pipeline and echo_check_passed:
+                # Non-pipeline mode - we already did the ECHO check
+                with open(self.output_file, 'a') as f:
+                    f.write("ECHO check passed, sending individual commands...\n")
                 
-                # If ECHO check passed, execute the random commands without error parsing
-                if echo_check_passed:
-                    with open(self.output_file, 'a') as f:
-                        f.write("ECHO check passed, sending random commands...\n")
-                    
-                    # Skip the first command if it was an ECHO (it's already been executed separately)
-                    start_index = 0
-                    if commands and commands[0].upper().startswith("ECHO"):
-                        start_index = 1
-                    
-                    # Execute each random command, but don't try to parse errors in the responses
-                    for i in range(start_index, len(commands)):
-                        cmd = commands[i]
-                        try:
-                            # Parse command into command name and arguments
-                            cmd_parts = cmd.split()
-                            if not cmd_parts:
-                                continue
-                                
-                            command_name = cmd_parts[0].upper()
-                            args = cmd_parts[1:]
+                # Add the server liveness check result
+                results.append(f"Server liveness check: PASSED\n")
+                
+                # Skip the first command if it was an ECHO (it's already been executed separately)
+                start_index = 0
+                if commands and commands[0].upper().startswith("ECHO"):
+                    start_index = 1
+                
+                # Execute each random command, but don't try to parse errors in the responses
+                for i in range(start_index, len(commands)):
+                    cmd = commands[i]
+                    try:
+                        # Parse command into command name and arguments
+                        cmd_parts = cmd.split()
+                        if not cmd_parts:
+                            continue
                             
-                            # Execute the command but don't try to parse the response for errors
-                            response = redis_client.execute_command(command_name, *args)
-                            
-                            # Just log that we sent the command and got a response
-                            results.append(f"Command: {cmd}\nResponse received\n")
-                            
-                        except Exception as e:
-                            # Log any exceptions but don't try to parse them
-                            results.append(f"Command: {cmd}\nException occurred\n")
-                            with open(self.output_file, 'a') as f:
-                                f.write(f"Exception while executing {cmd}: {str(e)}\n")
+                        command_name = cmd_parts[0].upper()
+                        args = cmd_parts[1:]
+                        
+                        # Execute the command but don't try to parse the response for errors
+                        response = redis_client.execute_command(command_name, *args)
+                        
+                        # Just log that we sent the command and got a response
+                        results.append(f"Command: {cmd}\nResponse received\n")
+                        
+                    except Exception as e:
+                        # Log any exceptions but don't try to parse them
+                        results.append(f"Command: {cmd}\nException occurred\n")
+                        with open(self.output_file, 'a') as f:
+                            f.write(f"Exception while executing {cmd}: {str(e)}\n")
             
             # Combine all results
             result_output = "\n".join(results)
@@ -798,16 +764,10 @@ class RedisFuzzer:
                 f.write(f"EXECUTION FAILED (code {exit_code})\n")
                 
                 if not echo_check_passed:
-                    if self.use_pipeline:
-                        f.write("SERVER CHECK FAILED: Redis server did not respond to ECHO command on separate connection\n")
-                        
-                        # Write the ECHO check failure to the error log
-                        echo_error_message = f"Batch {batch_num} FAILED (server did not respond to ECHO command on separate connection)"
-                    else:
-                        f.write("SERVER CHECK FAILED: Redis server did not respond to ECHO command\n")
-                        
-                        # Write the ECHO check failure to the error log
-                        echo_error_message = f"Batch {batch_num} FAILED (server did not respond to ECHO command)"
+                    f.write("SERVER CHECK FAILED: Redis server did not respond to ECHO command\n")
+                    
+                    # Write the ECHO check failure to the error log
+                    echo_error_message = f"Batch {batch_num} FAILED (server did not respond to ECHO command)"
                     
                     with open(self.error_log, 'a') as error_file:
                         error_file.write(f"\n==== BATCH {batch_num} ERROR ====\n")
@@ -866,7 +826,7 @@ class RedisFuzzer:
             else:
                 if self.use_pipeline:
                     f.write(f"PIPELINE EXECUTION SUCCEEDED ({execution_time:.2f}s)\n")
-                    f.write(f"SERVER CHECK: PASSED (ECHO response received on separate connection)\n")
+                    f.write(f"SERVER CHECK: PASSED (ECHO response received)\n")
                 else:
                     f.write(f"EXECUTION SUCCEEDED ({execution_time:.2f}s)\n")
                     f.write(f"SERVER CHECK: PASSED (ECHO response received)\n")
@@ -1058,4 +1018,11 @@ if __name__ == "__main__":
         fuzzer.cleanup(0)
     except Exception as e:
         print(f"Error: {e}")
+        # Store the error in the summary log if it exists
+        if hasattr(fuzzer, 'summary_log') and fuzzer.summary_log:
+            try:
+                with open(fuzzer.summary_log, 'a') as f:
+                    f.write(f"Fatal error during execution: {str(e)}\n")
+            except:
+                pass  # If we can't write to the log, just continue to cleanup
         fuzzer.cleanup(1)
