@@ -325,7 +325,7 @@ class RedisFuzzer:
             
             # Choose a length between 1 and 100 characters
             length = random.randint(1, min(100, len(command) - start_pos))
-            
+                
             # Extract the portion to duplicate
             portion = command[start_pos:start_pos+length]
             
@@ -467,7 +467,7 @@ class RedisFuzzer:
     def execute_batch(self, batch_num):
         """Execute a batch of commands using Redis Python client"""
         pipeline_size = random.randint(1, 10)
-        
+            
         # Log batch information
         with open(self.output_file, 'a') as f:
             f.write(f"\n==== BATCH {batch_num} ====\n")
@@ -500,6 +500,14 @@ class RedisFuzzer:
             
             with open(self.output_file, 'a') as f:
                 f.write(f"{fuzzed_cmd}\n")
+                
+        # Make sure we have at least one command for non-pipelined mode
+        # since we're doing ECHO check separately now
+        if not self.use_pipeline and not commands:
+            dummy_cmd = "PING"
+            commands.append(dummy_cmd)
+            with open(self.output_file, 'a') as f:
+                f.write(f"{dummy_cmd} (added as default command)\n")
                 
         # Log the commands list creation
         with open(self.output_file, 'a') as f:
@@ -706,29 +714,71 @@ class RedisFuzzer:
                     except:
                         error_output += "Failed to log commands information.\n"
             else:
-                # Normal mode - execute commands individually
-                for cmd in commands:
-                    try:
-                        # Parse command into command name and arguments
-                        cmd_parts = cmd.split()
-                        if not cmd_parts:
-                            continue
+                # Normal mode - first perform ECHO check for server liveness
+                try:
+                    # First command should be ECHO for liveness check
+                    # Create ECHO command first to verify server is alive
+                    echo_cmd = f"ECHO {echo_value}"
+                    with open(self.output_file, 'a') as f:
+                        f.write(f"Sending ECHO check: {echo_cmd}\n")
+                    
+                    # Execute the ECHO command to check server liveness
+                    echo_response = redis_client.echo(echo_value)
+                    
+                    # Check if ECHO response is as expected
+                    if echo_response == echo_value:
+                        echo_check_passed = True
+                        results.append(f"Server liveness check: PASSED\n")
+                        with open(self.output_file, 'a') as f:
+                            f.write(f"ECHO check: PASSED\n")
+                    else:
+                        results.append(f"Server liveness check: FAILED (unexpected response: {echo_response})\n")
+                        with open(self.output_file, 'a') as f:
+                            f.write(f"ECHO check: FAILED (unexpected response: {echo_response})\n")
+                        # Don't execute further commands if ECHO fails
+                        raise redis.ConnectionError("ECHO check failed with unexpected response")
+                        
+                except redis.RedisError as e:
+                    results.append(f"Server liveness check FAILED: {str(e)}\n")
+                    error_output += f"ECHO check error: {str(e)}\n"
+                    with open(self.output_file, 'a') as f:
+                        f.write(f"ECHO check: FAILED with error: {str(e)}\n")
+                    # Don't execute further commands if ECHO fails
+                    echo_check_passed = False
+                
+                # If ECHO check passed, execute the random commands without error parsing
+                if echo_check_passed:
+                    with open(self.output_file, 'a') as f:
+                        f.write("ECHO check passed, sending random commands...\n")
+                    
+                    # Skip the first command if it was an ECHO (it's already been executed separately)
+                    start_index = 0
+                    if commands and commands[0].upper().startswith("ECHO"):
+                        start_index = 1
+                    
+                    # Execute each random command, but don't try to parse errors in the responses
+                    for i in range(start_index, len(commands)):
+                        cmd = commands[i]
+                        try:
+                            # Parse command into command name and arguments
+                            cmd_parts = cmd.split()
+                            if not cmd_parts:
+                                continue
+                                
+                            command_name = cmd_parts[0].upper()
+                            args = cmd_parts[1:]
                             
-                        command_name = cmd_parts[0].upper()
-                        args = cmd_parts[1:]
-                        
-                        # Execute the command
-                        response = redis_client.execute_command(command_name, *args)
-                        
-                        # Check if this is the ECHO command (in normal mode, should be the first command)
-                        if command_name == "ECHO" and args and args[0] == echo_value:
-                            if response == echo_value:
-                                echo_check_passed = True
-                        
-                        results.append(f"Command: {cmd}\nResponse: {response}\n")
-                    except redis.RedisError as e:
-                        results.append(f"Command: {cmd}\nError: {str(e)}\n")
-                        error_output += f"Error executing {cmd}: {str(e)}\n"
+                            # Execute the command but don't try to parse the response for errors
+                            response = redis_client.execute_command(command_name, *args)
+                            
+                            # Just log that we sent the command and got a response
+                            results.append(f"Command: {cmd}\nResponse received\n")
+                            
+                        except Exception as e:
+                            # Log any exceptions but don't try to parse them
+                            results.append(f"Command: {cmd}\nException occurred\n")
+                            with open(self.output_file, 'a') as f:
+                                f.write(f"Exception while executing {cmd}: {str(e)}\n")
             
             # Combine all results
             result_output = "\n".join(results)
@@ -741,7 +791,7 @@ class RedisFuzzer:
             error_output = f"Connection error: {str(e)}"
             
         execution_time = time.time() - start_time
-        
+            
         # Log the outcome of this batch
         with open(self.output_file, 'a') as f:
             if exit_code != 0 or not echo_check_passed:
