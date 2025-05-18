@@ -74,7 +74,11 @@ class RedisFuzzer:
         
     def parse_arguments(self):
         """Parse and validate command line arguments"""
-        parser = argparse.ArgumentParser(description='Redis Command Fuzzer')
+        parser = argparse.ArgumentParser(
+            description='Redis Command Fuzzer',
+            usage='%(prog)s <IP:PORT> <NUM_BATCHES> --commands-file <FILE> [OPTIONS]',
+            epilog='Example: python3 redisFuzzer.py 127.0.0.1:6379 100 --commands-file randomRedisCommands.txt --fuzz --verbose'
+        )
         
         # Required positional arguments
         parser.add_argument('target', 
@@ -101,20 +105,13 @@ class RedisFuzzer:
         protocol_group.add_argument('--resp3', action='store_false', dest='resp2',
                                   help='Use RESP3 protocol')
         
-        # Handle argument errors more gracefully
-        try:
-            args = parser.parse_args()
-        except SystemExit:
-            # Catch parser errors and provide a more helpful message
-            print("\nError: Invalid arguments provided.")
-            self.print_usage()
-            sys.exit(1)
+        # Let argparse handle errors and help display
+        args = parser.parse_args()
         
         # Validate target format
         if ':' not in args.target:
             print("\nError: Invalid target format. Expected format: IP:PORT")
             print("The first argument must be the Redis server address and port.")
-            self.print_usage()
             sys.exit(1)
             
         self.ip, port_str = args.target.split(':')
@@ -124,11 +121,9 @@ class RedisFuzzer:
             self.port = int(port_str)
             if not 1 <= self.port <= 65535:
                 print("\nError: Port must be a number between 1-65535")
-                self.print_usage()
                 sys.exit(1)
         except ValueError:
             print("\nError: Port must be a number")
-            self.print_usage()
             sys.exit(1)
             
         # Validate number of batches
@@ -136,11 +131,9 @@ class RedisFuzzer:
             if args.num_batches < 1:
                 print("\nError: Number of batches must be a positive integer")
                 print("The second argument must be the number of batches to send.")
-                self.print_usage()
                 sys.exit(1)
         except (ValueError, TypeError):
             print("\nError: Second argument must be a valid number of batches (integer)")
-            self.print_usage()
             sys.exit(1)
             
         self.num_batches = args.num_batches
@@ -149,7 +142,6 @@ class RedisFuzzer:
         self.commands_file = args.commands_file
         if not os.path.isfile(self.commands_file):
             print(f"\nError: Commands file '{self.commands_file}' does not exist")
-            self.print_usage()
             sys.exit(1)
             
         if not os.access(self.commands_file, os.R_OK):
@@ -485,8 +477,25 @@ class RedisFuzzer:
             f.write(f"Pipeline mode: {'Enabled' if self.use_pipeline else 'Disabled'}\n")
             f.write("Commands:\n")
         
-        # Generate commands
+        # Create ECHO command to verify server is alive
+        echo_value = f"ALIVE_CHECK_{batch_num}"
+        echo_command = f"ECHO {echo_value}"
+        
+        # Add ECHO command to log file
+        with open(self.output_file, 'a') as f:
+            # If using pipeline, indicate ECHO will run on separate connection
+            if self.use_pipeline:
+                f.write(f"{echo_command} (on separate connection)\n")
+            else:
+                f.write(f"{echo_command}\n")
+        
+        # Generate commands list
         commands = []
+        # Only add ECHO to commands list if NOT using pipeline
+        if not self.use_pipeline:
+            commands.append(echo_command)
+        
+        # Add the random commands
         for _ in range(pipeline_size):
             cmd = self.random_command()
             fuzzed_cmd = self.fuzz_command(cmd)
@@ -494,14 +503,6 @@ class RedisFuzzer:
             
             with open(self.output_file, 'a') as f:
                 f.write(f"{fuzzed_cmd}\n")
-            
-        # Add ECHO command to verify server is alive
-        echo_value = f"ALIVE_CHECK_{batch_num}"
-        echo_command = f"ECHO {echo_value}"
-        commands.append(echo_command)
-        
-        with open(self.output_file, 'a') as f:
-            f.write(f"{echo_command}\n")
                 
         # Execute commands with timeout and error handling
         start_time = time.time()
@@ -512,7 +513,7 @@ class RedisFuzzer:
         echo_check_passed = False
         
         try:
-            # Create a Redis client
+            # Create a Redis client for main commands
             redis_client = redis.Redis(
                 host=self.ip, 
                 port=self.port, 
@@ -521,6 +522,33 @@ class RedisFuzzer:
                 decode_responses=True,  # Auto-decode Redis responses
                 protocol=2 if self.protocol_resp2 else 3  # Set protocol version based on args
             )
+            
+            # First, perform ECHO check on a separate connection if using pipeline
+            if self.use_pipeline:
+                # Create a separate connection for the ECHO check
+                echo_client = redis.Redis(
+                    host=self.ip, 
+                    port=self.port, 
+                    socket_timeout=timeout_seconds,
+                    socket_connect_timeout=timeout_seconds,
+                    decode_responses=True,
+                    protocol=2 if self.protocol_resp2 else 3
+                )
+                
+                try:
+                    # Execute ECHO command on separate connection
+                    echo_response = echo_client.echo(echo_value)
+                    if echo_response == echo_value:
+                        echo_check_passed = True
+                    echo_client.close()
+                except redis.RedisError as e:
+                    error_output += f"Error during separate ECHO check: {str(e)}\n"
+                    # Keep echo_check_passed as False
+                    
+                # Log the ECHO result
+                with open(self.output_file, 'a') as f:
+                    f.write(f"ECHO check (separate connection): {'PASSED' if echo_check_passed else 'FAILED'}\n")
+            
             
             # Execute commands - either in pipeline or individually
             results = []
@@ -549,18 +577,22 @@ class RedisFuzzer:
                 try:
                     responses = pipeline.execute()
                     
-                    # Process the responses
+                    # In pipeline mode, just log all responses as a single entry
+                    pipeline_result = "Pipeline executed with the following responses:\n"
+                    
+                    # Include ECHO check result from the separate connection
+                    pipeline_result += f"ECHO check (separate connection): {'PASSED' if echo_check_passed else 'FAILED'}\n"
+                    
+                    # Add all responses in a single log entry
+                    pipeline_result += f"Total commands in pipeline: {len(commands)}, Responses received: {len(responses)}\n\n"
+                    
+                    # Add the commands and responses
                     for i, (cmd, response) in enumerate(zip(commands, responses)):
-                        cmd_parts = cmd.split()
-                        command_name = cmd_parts[0].upper() if cmd_parts else ""
-                        args = cmd_parts[1:] if cmd_parts else []
-                        
-                        # Check if this is the ECHO response
-                        if command_name == "ECHO" and args and args[0] == echo_value:
-                            if response == echo_value:
-                                echo_check_passed = True
-                        
-                        results.append(f"Command: {cmd}\nResponse: {response}\n")
+                        pipeline_result += f"Command [{i+1}]: {cmd}\nResponse: {response}\n"
+                    
+                    # Add to results as a single entry
+                    results.append(pipeline_result)
+                    
                 except redis.RedisError as e:
                     error_output += f"Error executing pipeline: {str(e)}\n"
             else:
@@ -578,7 +610,7 @@ class RedisFuzzer:
                         # Execute the command
                         response = redis_client.execute_command(command_name, *args)
                         
-                        # Check if this is the ECHO response
+                        # Check if this is the ECHO command (in normal mode, should be the first command)
                         if command_name == "ECHO" and args and args[0] == echo_value:
                             if response == echo_value:
                                 echo_check_passed = True
@@ -606,10 +638,17 @@ class RedisFuzzer:
                 f.write(f"EXECUTION FAILED (code {exit_code})\n")
                 
                 if not echo_check_passed:
-                    f.write("SERVER CHECK FAILED: Redis server did not respond to ECHO command\n")
+                    if self.use_pipeline:
+                        f.write("SERVER CHECK FAILED: Redis server did not respond to ECHO command on separate connection\n")
+                        
+                        # Write the ECHO check failure to the error log
+                        echo_error_message = f"Batch {batch_num} FAILED (server did not respond to ECHO command on separate connection)"
+                    else:
+                        f.write("SERVER CHECK FAILED: Redis server did not respond to ECHO command\n")
+                        
+                        # Write the ECHO check failure to the error log
+                        echo_error_message = f"Batch {batch_num} FAILED (server did not respond to ECHO command)"
                     
-                    # Write the ECHO check failure to the error log
-                    echo_error_message = f"Batch {batch_num} FAILED (server did not respond to ECHO command)"
                     with open(self.error_log, 'a') as error_file:
                         error_file.write(f"\n==== BATCH {batch_num} ERROR ====\n")
                         error_file.write(f"Time: {datetime.now().strftime('%H:%M:%S')}\n")
@@ -633,11 +672,20 @@ class RedisFuzzer:
                         if not error_file.tell() or not echo_check_passed:
                             error_file.write(f"\n==== BATCH {batch_num} ERROR ====\n")
                             error_file.write(f"Time: {datetime.now().strftime('%H:%M:%S')}\n")
-                        error_file.write("ERROR DETAILS:\n")
-                        error_file.write(error_output)
+                        
+                        # In pipeline mode, don't parse individual command errors
+                        if not self.use_pipeline:
+                            error_file.write("ERROR DETAILS:\n")
+                            error_file.write(error_output)
+                        else:
+                            error_file.write("Pipeline execution error (details not parsed):\n")
+                            error_file.write(error_output)
                     
                 if result_output:
-                    f.write("PARTIAL RESULTS:\n")
+                    if self.use_pipeline:
+                        f.write("PIPELINE RESULTS:\n")
+                    else:
+                        f.write("PARTIAL RESULTS:\n")
                     f.write(result_output)
                     
                 with open(self.summary_log, 'a') as summary:
@@ -656,15 +704,25 @@ class RedisFuzzer:
                     elif error_output:
                         print(f"- Error: {error_output[:100]}...")
             else:
-                f.write(f"EXECUTION SUCCEEDED ({execution_time:.2f}s)\n")
-                f.write(f"SERVER CHECK: PASSED (ECHO response received)\n")
+                if self.use_pipeline:
+                    f.write(f"PIPELINE EXECUTION SUCCEEDED ({execution_time:.2f}s)\n")
+                    f.write(f"SERVER CHECK: PASSED (ECHO response received on separate connection)\n")
+                else:
+                    f.write(f"EXECUTION SUCCEEDED ({execution_time:.2f}s)\n")
+                    f.write(f"SERVER CHECK: PASSED (ECHO response received)\n")
                 
                 if result_output:
-                    f.write("RESULTS:\n")
+                    if self.use_pipeline:
+                        f.write("PIPELINE RESULTS:\n")
+                    else:
+                        f.write("RESULTS:\n")
                     f.write(result_output)
                     
                 if self.verbose:
-                    print(f"Batch {batch_num} succeeded ({execution_time*1000:.0f}ms)")
+                    if self.use_pipeline:
+                        print(f"Pipeline batch {batch_num} succeeded ({execution_time*1000:.0f}ms)")
+                    else:
+                        print(f"Batch {batch_num} succeeded ({execution_time*1000:.0f}ms)")
                 else:
                     # Print a progress indicator
                     if batch_num % 10 == 0 or batch_num == self.num_batches:
@@ -776,24 +834,9 @@ class RedisFuzzer:
 
     def print_usage(self):
         """Print usage instructions"""
-        print("\nRedis Command Fuzzer")
-        print("===================")
-        print("\nUsage:")
-        print("  python redisFuzzer.py <IP:PORT> <NUM_BATCHES> --commands-file <FILE> [OPTIONS]")
-        print("\nExample:")
-        print("  python redisFuzzer.py 127.0.0.1:6379 5 --commands-file /path/to/commands.txt --verbose")
-        print("\nPositional Arguments (required, must be first):")
-        print("  <IP:PORT>                   - Redis server address and port (first argument)")
-        print("  <NUM_BATCHES>               - Number of command batches to send (second argument)")
-        print("\nRequired Named Argument:")
-        print("  --commands-file, -c <FILE>  - Path to file containing Redis commands")
-        print("\nOptional Arguments:")
-        print("  --fuzz, -f                  - Enable command fuzzing")
-        print("  --verbose, -v               - Enable verbose output")
-        print("  --pipeline, -p              - Use Redis pipeline for sending commands in batches")
-        print("  --resp2                     - Use RESP2 protocol (default)")
-        print("  --resp3                     - Use RESP3 protocol")
-        print("\n")
+        # Let argparse handle the regular help output
+        # Only show the custom help when explicitly called
+        pass
 
 if __name__ == "__main__":
     fuzzer = RedisFuzzer()
@@ -805,5 +848,4 @@ if __name__ == "__main__":
         fuzzer.cleanup(0)
     except Exception as e:
         print(f"Error: {e}")
-        fuzzer.print_usage()
         fuzzer.cleanup(1)
