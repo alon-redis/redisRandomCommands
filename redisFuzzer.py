@@ -519,7 +519,7 @@ class RedisFuzzer:
                 port=self.port, 
                 socket_timeout=timeout_seconds,
                 socket_connect_timeout=timeout_seconds,
-                decode_responses=True,  # Auto-decode Redis responses
+                decode_responses=not self.use_pipeline,  # Only auto-decode in non-pipeline mode
                 protocol=2 if self.protocol_resp2 else 3  # Set protocol version based on args
             )
             
@@ -588,13 +588,30 @@ class RedisFuzzer:
                     
                     # Add the commands and responses
                     for i, (cmd, response) in enumerate(zip(commands, responses)):
-                        pipeline_result += f"Command [{i+1}]: {cmd}\nResponse: {response}\n"
+                        # In pipeline mode, safely handle binary responses that might not be UTF-8 decodable
+                        try:
+                            # Try to decode binary responses if needed
+                            if isinstance(response, bytes):
+                                try:
+                                    resp_str = response.decode('utf-8')
+                                    pipeline_result += f"Command [{i+1}]: {cmd}\nResponse: {resp_str}\n"
+                                except UnicodeDecodeError:
+                                    # If we can't decode as UTF-8, show as hex
+                                    pipeline_result += f"Command [{i+1}]: {cmd}\nResponse: <binary data: {response.hex()[:60]}...>\n"
+                            else:
+                                pipeline_result += f"Command [{i+1}]: {cmd}\nResponse: {response}\n"
+                        except Exception as e:
+                            pipeline_result += f"Command [{i+1}]: {cmd}\nResponse: <error processing response: {str(e)}>\n"
                     
                     # Add to results as a single entry
                     results.append(pipeline_result)
                     
-                except redis.RedisError as e:
-                    error_output += f"Error executing pipeline: {str(e)}\n"
+                except (redis.RedisError, UnicodeDecodeError) as e:
+                    if isinstance(e, UnicodeDecodeError):
+                        error_output += f"Error with binary data in pipeline: {str(e)}\n"
+                        error_output += "Binary data is now handled safely in pipeline mode.\n"
+                    else:
+                        error_output += f"Error executing pipeline: {str(e)}\n"
             else:
                 # Normal mode - execute commands individually
                 for cmd in commands:
