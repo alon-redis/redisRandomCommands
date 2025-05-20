@@ -114,9 +114,16 @@ The fuzzer generates three log files:
 
 - Python 3.6+
 - redis-py library 
+```bash
+apt install python3-pip -y
+pip install redis
+```
 
-
-
+## TODO
+1. change the code to run by time and not by number of batches
+2. add connection timeout in order to kill connections that doesn't finish
+3. tcpdump rotating file command
+4. python parser for tcpdump output
 
 
 
