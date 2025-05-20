@@ -142,7 +142,7 @@ The tool properly handles SIGINT and SIGTERM signals, ensuring clean resource cl
 - Command fuzzing is random and may generate invalid commands, which helps test Redis server's error handling 
 
 
-# TODO
+## TODO
 1. change the code to run by time and not by number of batches
 2. add connection timeout in order to kill connections that doesn't finish
 3. tcpdump rotating file command
