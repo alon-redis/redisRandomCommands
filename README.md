@@ -144,9 +144,10 @@ The tool properly handles SIGINT and SIGTERM signals, ensuring clean resource cl
 
 ## TODO
 1. change the code to run by time and not by number of batches
-2. add connection timeout in order to kill connections that doesn't finish
-3. tcpdump rotating file command
-4. python parser for tcpdump output
+2. add connection name to every conenction using CLIENT SETNAME
+3. add connection timeout in order to kill connections that doesn't finish
+4. tcpdump rotating file command
+5. python parser for tcpdump output
 
 
 
