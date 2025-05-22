@@ -146,11 +146,11 @@ The tool properly handles SIGINT and SIGTERM signals, ensuring clean resource cl
 1. change the code to run by time and not by number of batches
 2. add connection name to every conenction using CLIENT SETNAME
 3. add connection timeout in order to kill connections that doesn't finish
-4. tcpdump rotating file command
+4. tcpdump rotating 5 files command in size of 1MB, listening to localhost on port 6379 ```bash sudo tcpdump -i lo port 6379 -w /tmp/capture.pcap -C 1 -W 5```
 5. python parser for tcpdump output
-6. multiple connecitons or run the code in parallel
+6. multiple connecitons or run mulitple instances of the application - currently multiple instances supported
 7. identify failures inside the pipeline - check that every request got response (ERR or OK)
-8. transform the code to github actions (upload to s3)
+8. transform the code to github actions (expose input parameters, pytest, upload dump and logs to s3)
 
 
 
