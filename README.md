@@ -148,6 +148,8 @@ The tool properly handles SIGINT and SIGTERM signals, ensuring clean resource cl
 3. add connection timeout in order to kill connections that doesn't finish
 4. tcpdump rotating file command
 5. python parser for tcpdump output
+6. multiple connecitons or run the code in parallel
+7. identify failures inside the pipeline - check that every request got response (ERR or OK)
 
 
 
