@@ -150,6 +150,7 @@ The tool properly handles SIGINT and SIGTERM signals, ensuring clean resource cl
 5. python parser for tcpdump output
 6. multiple connecitons or run the code in parallel
 7. identify failures inside the pipeline - check that every request got response (ERR or OK)
+8. transform the code to github actions (upload to s3)
 
 
 
