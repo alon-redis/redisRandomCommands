@@ -155,6 +155,11 @@ The tool properly handles SIGINT and SIGTERM signals, ensuring clean resource cl
 7. identify failures inside the pipeline - check that every request got response (ERR or OK)
 8. transform the code to github actions (expose input parameters, pytest, upload dump and logs to s3)
 9. reply commands from text file (w/o fuzzing)
+10. create api script that will generate new random redis commands on every run. here is prompt suggestion:
+   ```bash
+    act as senior QA engineer that needs to develop fuzz test for redis server. generate list of 150 random redis commands. the suggested commands should be in the same context, i.e - same key name as much as possible. the commands should include also modules commands.
+don't made up commands or parameters.
+  ```
 
 
 
