@@ -61,13 +61,13 @@ These strategies comprehensively test the Redis protocol parser, command handler
 
 ```bash
 apt install python3-pip -y
-pip install redis
+pip3 install redis
 ```
 
 ## Usage
 
 ```bash
-python redisFuzzer.py <IP:PORT> <NUM_BATCHES> --commands-file <FILE> [OPTIONS]
+python3 redisFuzzer.py <IP:PORT> <NUM_BATCHES> --commands-file <FILE> [OPTIONS]
 ```
 
 ### Required Arguments
@@ -101,17 +101,17 @@ LRANGE list1 0 -1
 
 Basic usage:
 ```bash
-python redisFuzzer.py 127.0.0.1:6379 100 --commands-file redis_commands.txt
+python3 redisFuzzer.py 127.0.0.1:6379 100 --commands-file redis_commands.txt
 ```
 
 With fuzzing and verbose output:
 ```bash
-python redisFuzzer.py 127.0.0.1:6379 100 --commands-file redis_commands.txt --fuzz --verbose
+python3 redisFuzzer.py 127.0.0.1:6379 100 --commands-file redis_commands.txt --fuzz --verbose
 ```
 
 Using RESP3 protocol and pipeline mode:
 ```bash
-python redisFuzzer.py 127.0.0.1:6379 100 --commands-file redis_commands.txt --resp3 --pipeline
+python3 redisFuzzer.py 127.0.0.1:6379 100 --commands-file redis_commands.txt --resp3 --pipeline
 ```
 
 ## Log Files
